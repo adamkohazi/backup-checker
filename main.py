@@ -18,15 +18,20 @@ def compute_hash(file_path):
 def hash_files_in_directory(directory, duplicate_strategy = 'warn'):
     """Recursively hash all files in a directory with a progress bar."""
     
-    hash_map = {}
-    all_files = []
+    hash_map: dict["hashlib._Hash", str]  = {}
+    all_files: list[str] = []
+
+    # Create a list of all files
     print(f"Counting number of files...")
     for root, _, files in os.walk(directory):
         for filename in files:
             full_path = os.path.join(root, filename)
-            if os.path.basename(full_path) != "hash.json":
-                all_files.append(full_path)
+            if os.path.basename(full_path) == "hash.json":
+                continue
 
+            all_files.append(full_path)
+
+    # Process each file
     print(f"Hashing {len(all_files)} files in: {directory}")
     for full_path in tqdm(all_files, unit="file"):
         file_hash = compute_hash(full_path)
@@ -180,7 +185,8 @@ if __name__ == "__main__":
             print(path)
 
         if args.missing:
-            with open(args.missing, "w") as out:
+            missing_file_path = os.path.join(args.source, args.missing)
+            with open(missing_file_path, "w", encoding="utf-8") as out:
                 for path in missing_files:
                     out.write(path + "\n")
             print(f"\nMissing file list saved to: {args.missing}")
@@ -191,7 +197,8 @@ if __name__ == "__main__":
             print(path)
 
         if args.backed:
-            with open(args.backed, "w") as out:
+            backed_file_path = os.path.join(args.source, args.backed)
+            with open(backed_file_path, "w", encoding="utf-8") as out:
                 for path in duplicate_files:
                     out.write(path + "\n")
             print(f"\nRedundant file list saved to: {args.backed}")
