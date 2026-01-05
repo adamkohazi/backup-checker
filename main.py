@@ -15,10 +15,10 @@ def compute_hash(file_path):
         print(f"Error hashing {file_path}: {e}")
         return None
 
-def hash_files_in_directory(directory, duplicate_strategy = 'warn'):
+def hash_files_in_directory(directory):
     """Recursively hash all files in a directory with a progress bar."""
     
-    hash_map: dict["hashlib._Hash", str]  = {}
+    hash_map: dict["hashlib._Hash", list[str]]  = {}
     all_files: list[str] = []
 
     # Create a list of all files
@@ -37,50 +37,14 @@ def hash_files_in_directory(directory, duplicate_strategy = 'warn'):
         file_hash = compute_hash(full_path)
         if file_hash:
             # Check for duplicates
-            if file_hash in hash_map:
-                match duplicate_strategy:
-                    case 'warn':
-                        print(f"Potential duplicate file: {full_path}")
-                    case 'ask':
-                        print(f"  1 - {hash_map[file_hash]}")
-                        print(f"   2 - {full_path}")
-                        print("   a - Keep both versions")
-                        while True:
-                            choice = input("Which file do you want to keep? (1/2/a) " )
-                            match choice:
-                                case '1':
-                                    delete_file(full_path)
-                                    break
-                                case '2':
-                                    delete_file(hash_map[file_hash])
-                                    hash_map[file_hash] = full_path
-                                    break
-                                case 'a':
-                                    print("Both files kept.")
-                                    break
-                                case _:
-                                    print("Wrong input, please try again.")
+            if file_hash  not in hash_map:
+                hash_map[file_hash] = []
+            
+            hash_map[file_hash].append(full_path)
 
-                    case 'delete':
-                        # Make sure the files are duplicates
-                        filename1, extension1 = os.path.splitext(os.path.basename(hash_map[file_hash]))
-                        filename2, extension2 = os.path.splitext(os.path.basename(full_path))
+        else:
+            print(f"Failed to hash file: {full_path}")
 
-                        if (extension1 == extension2) and ((filename1 in filename2) or (filename2 in filename1)):
-                            # If already hashed file is older
-                            if(os.stat(full_path).st_ctime >= os.stat(hash_map[file_hash]).st_ctime):
-                                delete_file(full_path)
-                            # If new one is older
-                            else:
-                                delete_file(hash_map[file_hash])
-                                hash_map[file_hash] = full_path
-                        else:
-                            print(f"Ambigous files, keeping both.")
-                            print(f"   1 - {hash_map[file_hash]}")
-                            print(f"   2 - {full_path}")
-
-            else:
-                hash_map[file_hash] = full_path
 
     # Save hash map to a file
     hash_map_path = os.path.join(directory, "hash.json")
@@ -89,40 +53,57 @@ def hash_files_in_directory(directory, duplicate_strategy = 'warn'):
     
     return hash_map
 
-def load_or_create_hash_map(directory, duplicate_strategy):
-    """Load hash map from file or create a new one."""
-    hash_map_path = os.path.join(directory, "hash.json")
-    hash_map = {}
-
-    if os.path.exists(hash_map_path):
-        print(f"Found hash map in: {directory}")
-        response = input(f"Do you want to update the hash map in '{directory}'? (y/n): ").strip().lower()
-        if response == 'y':
-            hash_map = hash_files_in_directory(directory, duplicate_strategy)
-        else:
-            with open(hash_map_path, 'r') as f:
-                hash_map = json.load(f)
+def find_unbacked_files(backup_dir, source_dir):
+    # --- Backup hash decision ---
+    backup_hashes = None
+    print("Looking for existing backup hash file.")
+    backup_hash_path = os.path.join(backup_dir, "hash.json")
+    if os.path.exists(backup_hash_path):
+        response = input(
+            f"Do you want to update hash map: '{backup_hash_path}'? (y/n): "
+        ).strip().lower()
+        if response != "y":
+            print("Loading hash map for backup")
+            with open(backup_hash_path, "r") as f:
+                backup_hashes = json.load(f)
     else:
-        print(f"No hash map found in: {directory}. Creating one...")
-        hash_map = hash_files_in_directory(directory, duplicate_strategy)
+        print("No backup hash map found.")
 
-    return hash_map
+    # --- Source hash decision ---
+    source_hashes = None
+    print("Looking for existing source hash file.")
+    source_hash_path = os.path.join(source_dir, "hash.json")
+    if os.path.exists(source_hash_path):
+        response = input(
+            f"Do you want to update hash map: '{source_hash_path}'? (y/n): "
+        ).strip().lower()
+        if response != "y":
+            print("Loading hash map for source")
+            with open(source_hash_path, "r") as f:
+                source_hashes = json.load(f)
+    else:
+        print("No source hash map found.")
 
-def find_unbacked_files(backup_dir, source_dir, duplicate_strategy):
-    """Find files in source not backed up in backup."""
-    print(f"Scanning backup folder: {backup_dir}")
-    backup_hashes = load_or_create_hash_map(backup_dir, 'warn')
-    print(f"Scanning source folder: {source_dir}")
-    source_hashes = load_or_create_hash_map(source_dir, duplicate_strategy)
+    # --- Slow operations (only if needed) ---
+    if backup_hashes is None:
+        print("Hashing backup directory...")
+        backup_hashes = hash_files_in_directory(backup_dir)
 
+    if source_hashes is None:
+        print("Hashing source directory...")
+        source_hashes = hash_files_in_directory(source_dir)
+
+    # --- Generate output ---
     missing = []
     backed_up = []
 
-    for file_hash, file_path in source_hashes.items():
-        if file_hash not in backup_hashes:
-            missing.append(file_path)
-        else:
-            backed_up.append(file_path)
+    print("Generating output files...")
+    for file_hash, file_paths in source_hashes.items():
+        for fp in file_paths:
+            if file_hash not in backup_hashes:
+                missing.append(fp)
+            else:
+                backed_up.append(fp)
 
     return missing, backed_up
 
@@ -160,24 +141,9 @@ if __name__ == "__main__":
         help="Delete files that are already backed up. Asks for confirmation."
         )
 
-    parser.add_argument(
-        "--duplicate_strategy", 
-        choices=["warn", "ask", "delete"], 
-        default="warn", 
-        help="How to handle duplicate source files: 'warn', 'ask', or 'delete'. Default is 'warn'."
-    )
     args = parser.parse_args()
 
-    if args.duplicate_strategy == 'delete':
-        print("\nYou have chosen to delete duplicate source files. Please be very cautious!")
-        confirm = input("Type 'confirm' to proceed with deletion: ").strip().lower()
-        
-        if confirm != 'confirm':
-            args.duplicate_strategy = 'warn'
-            input("Deletion action cancelled. Setting duplicate mode to 'warn' instead. Press any key to continue...")
-
-
-    missing_files, duplicate_files = find_unbacked_files(args.backup, args.source, args.duplicate_strategy)
+    missing_files, duplicate_files = find_unbacked_files(args.backup, args.source)
 
     print(f"\nFound {len(missing_files)} files in source that are not in backup.")
     if missing_files:
