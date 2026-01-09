@@ -3,22 +3,19 @@ import hashlib
 import json
 from tqdm import tqdm
 
-def compute_hash(file_path):
+def compute_hash(file_path, chunk_size=1024 * 1024):
     """Compute SHA-256 hash of a file."""
-    hash_sha256 = hashlib.sha256()
     try:
         with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                hash_sha256.update(chunk)
-        return hash_sha256.hexdigest()
+            return hashlib.file_digest(f, "sha256").hexdigest()
     except Exception as e:
         print(f"Error hashing {file_path}: {e}")
         return None
 
-def hash_files_in_directory(directory):
+def hash_files(directory):
     """Recursively hash all files in a directory with a progress bar."""
     
-    hash_map: dict["hashlib._Hash", list[str]]  = {}
+    hash_map: dict[str, list[str]]  = {}
     all_files: list[str] = []
 
     # Create a list of all files
@@ -33,8 +30,9 @@ def hash_files_in_directory(directory):
 
     # Process each file
     print(f"Hashing {len(all_files)} files in: {directory}")
-    for full_path in tqdm(all_files, unit="file"):
+    for full_path in tqdm(all_files, mininterval=0.5, smoothing=0.0, unit="file"):
         file_hash = compute_hash(full_path)
+
         if file_hash:
             # Check for duplicates
             if file_hash  not in hash_map:
@@ -43,7 +41,7 @@ def hash_files_in_directory(directory):
             hash_map[file_hash].append(full_path)
 
         else:
-            print(f"Failed to hash file: {full_path}")
+            tqdm.write(f"Failed to hash file: {full_path}")
 
 
     # Save hash map to a file
@@ -52,60 +50,6 @@ def hash_files_in_directory(directory):
         json.dump(hash_map, f, indent=2)
     
     return hash_map
-
-def find_unbacked_files(backup_dir, source_dir):
-    # --- Backup hash decision ---
-    backup_hashes = None
-    print("Looking for existing backup hash file.")
-    backup_hash_path = os.path.join(backup_dir, "hash.json")
-    if os.path.exists(backup_hash_path):
-        response = input(
-            f"Do you want to update hash map: '{backup_hash_path}'? (y/n): "
-        ).strip().lower()
-        if response != "y":
-            print("Loading hash map for backup")
-            with open(backup_hash_path, "r") as f:
-                backup_hashes = json.load(f)
-    else:
-        print("No backup hash map found.")
-
-    # --- Source hash decision ---
-    source_hashes = None
-    print("Looking for existing source hash file.")
-    source_hash_path = os.path.join(source_dir, "hash.json")
-    if os.path.exists(source_hash_path):
-        response = input(
-            f"Do you want to update hash map: '{source_hash_path}'? (y/n): "
-        ).strip().lower()
-        if response != "y":
-            print("Loading hash map for source")
-            with open(source_hash_path, "r") as f:
-                source_hashes = json.load(f)
-    else:
-        print("No source hash map found.")
-
-    # --- Slow operations (only if needed) ---
-    if backup_hashes is None:
-        print("Hashing backup directory...")
-        backup_hashes = hash_files_in_directory(backup_dir)
-
-    if source_hashes is None:
-        print("Hashing source directory...")
-        source_hashes = hash_files_in_directory(source_dir)
-
-    # --- Generate output ---
-    missing = []
-    backed_up = []
-
-    print("Generating output files...")
-    for file_hash, file_paths in source_hashes.items():
-        for fp in file_paths:
-            if file_hash not in backup_hashes:
-                missing.append(fp)
-            else:
-                backed_up.append(fp)
-
-    return missing, backed_up
 
 def delete_file(file):
     """Function to delete file after confirmation"""
@@ -120,12 +64,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Find files in source that are not backed up (by content).")
     parser.add_argument(
-        "backup",
-        help="Path to the backup folder"
-    )
-    parser.add_argument(
         "source",
         help="Path to the source folder"
+    )
+    parser.add_argument(
+        "backup",
+        help="Path to the backup folder"
     )
     parser.add_argument(
         "-m", "--missing",
@@ -136,49 +80,172 @@ if __name__ == "__main__":
         help="Optional output file to save the list of files present in source, already backed up."
     )
     parser.add_argument(
+        "-sd", "--source_duplicates",
+        help="Optional output file to save the list of duplicate files in the source folder."
+    )
+    parser.add_argument(
+        "-bd", "--backup_duplicates",
+        help="Optional output file to save the list of duplicate files in the source folder."
+    )
+    parser.add_argument(
+        "--delete_duplicates",
+        action="store_true",
+        help="Delete duplicate files from source. Asks for confirmation."
+    )
+    parser.add_argument(
         "--delete_backed",
         action="store_true",
         help="Delete files that are already backed up. Asks for confirmation."
-        )
+    )
 
     args = parser.parse_args()
 
-    missing_files, duplicate_files = find_unbacked_files(args.backup, args.source)
+    # --- Backup hash decision ---
+    backup_hashes = None
+    print("Looking for existing backup hash file...")
+    backup_hash_path = os.path.join(args.backup, "hash.json")
+    if os.path.exists(backup_hash_path):
+        response = input(
+            f"Do you want to update hash map: '{backup_hash_path}'? (y/n): "
+        ).strip().lower()
+        if response != "y":
+            print("Loading hash map for backup")
+            with open(backup_hash_path, "r") as f:
+                backup_hashes = json.load(f)
+    else:
+        print("No backup hash map found.")
 
-    print(f"\nFound {len(missing_files)} files in source that are not in backup.")
+    # --- Source hash decision ---
+    source_hashes = None
+    print("\nLooking for existing source hash file...")
+    source_hash_path = os.path.join(args.source, "hash.json")
+    if os.path.exists(source_hash_path):
+        response = input(
+            f"Do you want to update hash map: '{source_hash_path}'? (y/n): "
+        ).strip().lower()
+        if response != "y":
+            print("Loading hash map for source")
+            with open(source_hash_path, "r") as f:
+                source_hashes = json.load(f)
+    else:
+        print("No source hash map found.")
+
+    # --- Slow operations (only if needed) ---
+    if backup_hashes is None:
+        print("\nHashing backup directory...")
+        backup_hashes = hash_files(args.backup)
+
+    if source_hashes is None:
+        print("\nHashing source directory...")
+        source_hashes = hash_files(args.source)
+
+    # --- Collect missing / duplicate files ---
+    missing_files: list[list[str]] = []
+    backed_up_files: list[str] = []
+
+    print("\nGenerating output files...")
+    for file_hash, file_paths in source_hashes.items():
+        if file_hash in backup_hashes:
+            for fp in file_paths:
+                backed_up_files.append(fp)
+                
+        else:
+            missing_files.append(file_paths)
+                
+    
     if missing_files:
-        for path in missing_files:
-            print(path)
+        print(f"\n{len(missing_files)} unique files found in source that are not in backup.")
 
         if args.missing:
             missing_file_path = os.path.join(args.source, args.missing)
             with open(missing_file_path, "w", encoding="utf-8") as out:
-                for path in missing_files:
-                    out.write(path + "\n")
-            print(f"\nMissing file list saved to: {args.missing}")
+                for unique in missing_files:
+                    out.write(f"{unique[0]}\n")
+                    for fp in unique[1:]:
+                        out.write(f"\t{fp}\n")
+            print(f"Missing file list saved to: {missing_file_path}")
+    else:
+        print(f"\nGood news! Every file in source has already been backed up.")
+
     
-    print(f"\nFound {len(duplicate_files)} files in source that ARE in backup.")
-    if duplicate_files:
-        for path in duplicate_files:
-            print(path)
+    if backed_up_files:
+        print(f"\n{len(backed_up_files)} files found in source that ARE in backup.")
 
         if args.backed:
             backed_file_path = os.path.join(args.source, args.backed)
             with open(backed_file_path, "w", encoding="utf-8") as out:
-                for path in duplicate_files:
+                for path in backed_up_files:
                     out.write(path + "\n")
-            print(f"\nRedundant file list saved to: {args.backed}")
+            print(f"Redundant file list saved to: {backed_file_path}")
+    else:
+        print(f"\nNone of the files in source are backed up!")
+
+
+    print(f"\n{sum([len(paths)-1 for paths in source_hashes.values() if len(paths)>1])} duplicate files found in the source folder.")
+    if args.source_duplicates:
+        source_duplicate_file_path = os.path.join(args.source, args.source_duplicates)
+        with open(source_duplicate_file_path, "w", encoding="utf-8") as out:
+            for file_paths in source_hashes.values():
+                if len(file_paths) > 1:
+                    out.write(f"File: {os.path.basename(file_paths[0])}\n")
+                    for fp in file_paths:
+                        out.write(f"\t{fp}\n")
+        print(f"Duplicate files in source saved to: {source_duplicate_file_path}")
     
-    # If the user has confirmed the deletion, proceed with file removal
-    if args.delete_backed:
-        print("\nYou have chosen to delete source files that are already backed up. Please be very cautious!")
+    print(f"\n{sum([len(paths)-1 for paths in backup_hashes.values() if len(paths)>1])} duplicate files found in the backup folder.")
+    if args.backup_duplicates:
+        backup_duplicate_file_path = os.path.join(args.backup, args.backup_duplicates)
+        with open(backup_duplicate_file_path, "w", encoding="utf-8") as out:
+            for file_paths in backup_hashes.values():
+                if len(file_paths) > 1:
+                    out.write(f"File: {os.path.basename(file_paths[0])}\n")
+                    for fp in file_paths:
+                        out.write(f"\t{fp}\n")
+        print(f"Duplicate files in backup saved to: {backup_duplicate_file_path}")
+    
+    ##
+    if args.delete_duplicates:
+        # If the user has confirmed the deletion, proceed with file removal
+        print("\nYou have chosen to delete duplicate source files. Please be very cautious!")
         confirm = input("Type 'confirm' to proceed with deletion: ").strip().lower()
         
         if confirm == 'confirm':
-            if duplicate_files:
-                for file in duplicate_files:
-                    delete_file(file)
-            else:
-                print("No files found to delete.")
+            for file_paths in source_hashes.values():
+                for fp in file_paths[1:]:
+                    delete_file(fp)
+        
+                    # Delete directory if it has become empty
+                    dir_path = os.path.dirname(fp)
+                    while dir_path and os.path.isdir(dir_path):
+                        try:
+                            os.rmdir(dir_path)  # only works if empty
+                        except OSError:
+                            break  # directory not empty
+                        dir_path = os.path.dirname(dir_path)
         else:
             print("Deletion action cancelled.")
+        
+
+    if args.delete_backed:
+        if backed_up_files:
+            # If the user has confirmed the deletion, proceed with file removal
+            print("\nYou have chosen to delete source files that are already backed up. Please be very cautious!")
+            confirm = input("Type 'confirm' to proceed with deletion: ").strip().lower()
+            
+            if confirm == 'confirm':
+                for file in backed_up_files:
+                    delete_file(file)
+                
+                # Delete directory if it has become empty
+                dir_path = os.path.dirname(file)
+                while dir_path and os.path.isdir(dir_path):
+                    try:
+                        os.rmdir(dir_path)  # only works if empty
+                    except OSError:
+                        break  # directory not empty
+                    dir_path = os.path.dirname(dir_path)
+            else:
+                print("Deletion action cancelled.")
+        else:
+            print("\nNothing to delete, everything needs to be backed up!")
+
